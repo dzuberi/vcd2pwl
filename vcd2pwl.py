@@ -6,6 +6,11 @@ import vcd.reader as pyvcd
 import pickle
 import sys
 
+def sanitize_filename(name):
+    # Replace any character not allowed in Linux file names with _
+    # Allowed: letters, numbers, dot, dash, underscore
+    return re.sub(r'[^A-Za-z0-9._-]', '_', name)
+
 class Signal:
     def __init__(self, type, size, id, name):
         self.type = type
@@ -83,7 +88,7 @@ class PWLConverter:
             time = values[0].time * self.vcd.timescale
             value = self.digital_to_analog(values[0].value)
             if value != self.Z:
-                self.analog_value_table.append(Value(value, time))
+                self.analog_value_table[id].append(Value(value, time))
             for i in range(1, len(values)):
                 if values[i].value == values[i-1].value:
                     continue
@@ -94,6 +99,21 @@ class PWLConverter:
                     self.analog_value_table[id].append(Value(prev_value, time))
                 if new_value != self.Z:
                     self.analog_value_table[id].append(Value(new_value, values[i].time + self.TRF))
+    
+    def dump_pwls(self, pwl_dir="pwls"):
+        os.makedirs(pwl_dir, exist_ok=True)
+        for id, values in self.analog_value_table.items():
+            signals = self.vcd.symbol_table[id]
+            for signal in signals:
+                subpath = '/'.join(signal.name.split('.')[:-1])
+                file_name = f"{sanitize_filename(signal.name.split('.')[-1])}.pwl"
+                signal_path = os.path.join(pwl_dir, subpath)
+                os.makedirs(signal_path, exist_ok=True)
+                file_name = f"{signal_path}/{file_name}.pwl"
+                with open(file_name, "w") as fid:
+                    for value in values:
+                        fid.write(f"{value.time} {value.value}\n")
+        
 
 class VCDIngest:
     def __init__(self):
@@ -179,7 +199,7 @@ class VCDIngest:
                         value = 100
                     case _:
                         raise ValueError(f"Unknown timescale magnitude: {token.timescale.magnitude}")
-                timescale = multiplier * value
+                self.timescale = multiplier * value
                 print(f"Timescale set to {timescale} seconds.")
             case pyvcd.TokenKind.UPSCOPE:
                 if self.current_scope:
@@ -280,3 +300,6 @@ if __name__ == "__main__":
     p = PWLConverter(v)
     p.convert()
     print("Conversion to PWL format completed.")
+    print("Dumping PWL files...")
+    p.dump_pwls(args.output_dir)
+    print("PWL files dumped successfully.")
