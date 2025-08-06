@@ -5,6 +5,12 @@ from collections import defaultdict
 import vcd.reader as pyvcd
 import pickle
 import sys
+from tqdm import tqdm
+import subprocess
+
+def get_dir_size_du(path):
+    result = subprocess.run(['du', '-sh', path], stdout=subprocess.PIPE, text=True)
+    return result.stdout.strip()
 
 def sanitize_filename(name):
     # Replace any character not allowed in Linux file names with _
@@ -98,18 +104,22 @@ class PWLConverter:
                 if prev_value != self.Z:
                     self.analog_value_table[id].append(Value(prev_value, time))
                 if new_value != self.Z:
-                    self.analog_value_table[id].append(Value(new_value, values[i].time + self.TRF))
+                    self.analog_value_table[id].append(Value(new_value, time + self.TRF))
     
-    def dump_pwls(self, pwl_dir="pwls"):
+    def dump_pwls(self, pwl_dir="pwls", submodule="prga_tb_top.i_postimpl.dut"):
         os.makedirs(pwl_dir, exist_ok=True)
-        for id, values in self.analog_value_table.items():
+        for id, values in tqdm(sorted(self.analog_value_table.items(), key = lambda x: len(x[1]), reverse = True)):
+            # Keeping track of directory size since it can grow large
+            print(f"Current directory size: {get_dir_size_du(pwl_dir)}") 
             signals = self.vcd.symbol_table[id]
             for signal in signals:
+                if not signal.name.startswith(submodule):
+                    continue
                 subpath = '/'.join(signal.name.split('.')[:-1])
                 file_name = f"{sanitize_filename(signal.name.split('.')[-1])}.pwl"
                 signal_path = os.path.join(pwl_dir, subpath)
                 os.makedirs(signal_path, exist_ok=True)
-                file_name = f"{signal_path}/{file_name}.pwl"
+                file_name = f"{signal_path}/{file_name}"
                 with open(file_name, "w") as fid:
                     for value in values:
                         fid.write(f"{value.time} {value.value}\n")
@@ -200,7 +210,7 @@ class VCDIngest:
                     case _:
                         raise ValueError(f"Unknown timescale magnitude: {token.timescale.magnitude}")
                 self.timescale = multiplier * value
-                print(f"Timescale set to {timescale} seconds.")
+                print(f"Timescale set to {self.timescale} seconds.")
             case pyvcd.TokenKind.UPSCOPE:
                 if self.current_scope:
                     self.current_scope.pop()
@@ -283,9 +293,6 @@ if __name__ == "__main__":
     parser.add_argument("--pickle_file", default="pyvcd.pickle", help="File to save the VCD data as a pickle.")
     args = parser.parse_args()
 
-
-    # Ensure the output directory exists
-    os.makedirs("pwls", exist_ok=True)
 
     v = VCDIngest()
     # Read the VCD file and process it
