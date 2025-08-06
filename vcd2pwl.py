@@ -6,24 +6,96 @@ import vcd.reader as pyvcd
 import pickle
 import sys
 
-class VCDIngest:
-    class Signal:
-        def __init__(self, type, size, id, name):
-            self.type = type
-            self.size = size
-            self.id = id
-            self.name = name
-        def __str__(self):
-            if self.size > 1:
-                return f"{self.type}:{self.name}[{self.size-1}:0]"
-            return f"{self.type}:{self.name}"
-    class Value:
-        def __init__(self, value, time):
-            self.value = value
-            self.time = time
-        def __str__(self):
-            return f"{self.value} @ {self.time}"
+class Signal:
+    def __init__(self, type, size, id, name):
+        self.type = type
+        self.size = size
+        self.id = id
+        self.name = name
+    def __str__(self):
+        if self.size > 1:
+            return f"{self.type}:{self.name}[{self.size-1}:0]"
+        return f"{self.type}:{self.name}"
 
+class Value:
+    def __init__(self, value, time):
+        self.value = value
+        self.time = time
+    def copy(self):
+        return Value(self.value, self.time)
+    def __str__(self):
+        return f"{self.value} @ {self.time}"
+    def __eq__(self, other):
+        if not isinstance(other, Value):
+            return NotImplemented
+        return self.value == other.value and self.time == other.time
+
+class PWLConverter:
+    def __init__(self, vcd):
+        self.value_table = defaultdict(list)
+        self.HI = 3.3       # Electrical level for a logical 1
+        self.LO = 0.0       # Electrical value for a logical 0
+        self.TRF = 1e-9     # Rise/fall time in sec
+        self.Z = 'z'
+        self.vcd = vcd # VCDIngest instance
+    
+    def convert(self):
+        # Convert the VCD data to PWL format
+        self.clean_dvt() # doesn't seem necessary
+        self.analyze_fastest_transition()
+        self.convert_dvt_to_analog()
+
+    def clean_dvt(self):
+        """ Clean duplicate values in the digital value table. """
+        self.digital_value_table = defaultdict(list)
+        for id,values in self.vcd.value_table.items():
+            if not values:
+                print(f"Warning: No values for signal {id}. Adding an X.")
+                self.digital_value_table[id].append(Value('x', 0))
+                continue
+            self.digital_value_table[id].append(values[0].copy())
+            for i in range(1, len(values)):
+                if values[i] != values[i-1]:
+                    self.digital_value_table[id].append(values[i].copy())
+            if self.digital_value_table[id][0].time != 0:
+                self.digital_value_table[id].insert(0, Value(self.digital_value_table[id][0].value, 0))
+
+    def analyze_fastest_transition(self):
+        fastest_transition = float('inf')
+        for id,values in self.digital_value_table.items():
+            for i in range(1, len(values)):
+                transition_time = values[i].time - values[i-1].time
+                if transition_time < fastest_transition:
+                    fastest_transition = transition_time
+                if transition_time == 0:
+                    print(f"Warning: Zero transition time detected for signal {id}: {values[i-1]} -> {values[i]}")
+        if(fastest_transition * self.vcd.timescale < 2*self.TRF):
+            print(f"Fastest transition time {fastest_transition * self.vcd.timescale} is less than 2x the rise/fall time {self.TRF}.")
+            print("This may lead to inaccurate PWL generation.")
+            sys.exit(1)
+    
+    def digital_to_analog(self, value):
+        return self.LO if value == '0' or value == 'X' else self.HI if value == '1' else self.Z
+
+    def convert_dvt_to_analog(self):
+        self.analog_value_table = defaultdict(list)
+        for id, values in self.digital_value_table.items():
+            time = values[0].time * self.vcd.timescale
+            value = self.digital_to_analog(values[0].value)
+            if value != self.Z:
+                self.analog_value_table.append(Value(value, time))
+            for i in range(1, len(values)):
+                if values[i].value == values[i-1].value:
+                    continue
+                time = values[i].time * self.vcd.timescale
+                prev_value = self.digital_to_analog(values[i-1].value)
+                new_value = self.digital_to_analog(values[i].value)
+                if prev_value != self.Z:
+                    self.analog_value_table[id].append(Value(prev_value, time))
+                if new_value != self.Z:
+                    self.analog_value_table[id].append(Value(new_value, values[i].time + self.TRF))
+
+class VCDIngest:
     def __init__(self):
         self.current_scope = []
         self.timescale = 1  # Default timescale in seconds
@@ -32,16 +104,26 @@ class VCDIngest:
         self.time = 0
         
     def store_pickle(self, pickle_file):
-        pass
+        pickle.dump({
+            'symbol_table': self.symbol_table,
+            'value_table': self.value_table,
+            'timescale': self.timescale
+        }, open(pickle_file, "wb"))
+    
+    def load_pickle(self, pickle_file):
+        data = pickle.load(open(pickle_file, "rb"))
+        self.symbol_table = data['symbol_table']
+        self.value_table = data['value_table']
+        self.timescale = data['timescale']
 
     def add_signal(self, type, size, id, name):
         signal_path = '.'.join(self.current_scope + [name])
         # print(f"Signal added: {signal_path} (Type: {type}, Size: {size}, ID: {id})")
-        self.symbol_table[id].append(self.Signal(type, size, id, signal_path))
-        self.value_table[id] = [self.Value('X',self.time)] # default value
+        self.symbol_table[id].append(Signal(type, size, id, signal_path))
+        self.value_table[id] = [] # default value is an empty list because the initial values are set in the VCD file at least in Icarus
     
     def change_value(self, id, value):
-        self.value_table[id].append(self.Value(value, self.time))
+        self.value_table[id].append(Value(value, self.time))
 
     def process_token(self, token):
         match token.kind:
@@ -138,13 +220,13 @@ class VCDIngest:
             case pyvcd.TokenKind.CHANGE_SCALAR:
                 id_code = token.scalar_change.id_code
                 value = token.scalar_change.value
-                self.value_table[id_code].append(self.Value(value, self.time))
+                self.value_table[id_code].append(Value(value, self.time))
                 # print(f"Scalar change: {id_code} = {value}")
                 # raise NotImplementedError("CHANGE_SCALAR token handling not implemented.")
             case pyvcd.TokenKind.CHANGE_VECTOR:
                 id_code = token.vector_change.id_code
                 value = token.vector_change.value
-                self.value_table[id_code].append(self.Value(value, self.time))
+                self.value_table[id_code].append(Value(value, self.time))
                 # print(f"Vector change: {id_code} = {value}")
                 # raise NotImplementedError("CHANGE_VECTOR token handling not implemented.")
             case pyvcd.TokenKind.CHANGE_REAL: #TODO: Not seen in Icarus VCD
@@ -190,3 +272,11 @@ if __name__ == "__main__":
     if args.vcd_file:
         v.read_vcd_file(args.vcd_file)
         v.store_pickle(args.pickle_file)
+    
+    if not args.vcd_file and args.pickle_file:
+        v.load_pickle(args.pickle_file)
+        print("Loaded VCD data from pickle file.")
+
+    p = PWLConverter(v)
+    p.convert()
+    print("Conversion to PWL format completed.")
