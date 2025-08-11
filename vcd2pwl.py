@@ -108,21 +108,19 @@ class PWLConverter:
     
     def dump_pwls(self, pwl_dir="pwls", submodule="prga_tb_top.i_postimpl.dut"):
         os.makedirs(pwl_dir, exist_ok=True)
+        file_to_id ={i: id for i, id in enumerate(self.vcd.symbol_table.keys())}
+        id_to_file = {id: i for i, id in file_to_id.items()}
+        data = {
+            'id_to_signal': self.vcd.symbol_table,
+            'file_to_id': file_to_id
+        }
+        pickle.dump(data, open(os.path.join(pwl_dir, "dicts.pickle"), "wb"))
         for id, values in tqdm(sorted(self.analog_value_table.items(), key = lambda x: len(x[1]), reverse = True)):
-            # Keeping track of directory size since it can grow large
-            print(f"Current directory size: {get_dir_size_du(pwl_dir)}") 
-            signals = self.vcd.symbol_table[id]
-            for signal in signals:
-                if not signal.name.startswith(submodule):
-                    continue
-                subpath = '/'.join(signal.name.split('.')[:-1])
-                file_name = f"{sanitize_filename(signal.name.split('.')[-1])}.pwl"
-                signal_path = os.path.join(pwl_dir, subpath)
-                os.makedirs(signal_path, exist_ok=True)
-                file_name = f"{signal_path}/{file_name}"
-                with open(file_name, "w") as fid:
-                    for value in values:
-                        fid.write(f"{value.time} {value.value}\n")
+            file_name = f"{id_to_file[id]}.pwl"
+            file_path = os.path.join(pwl_dir, file_name)
+            with open(file_path, "w") as fid:
+                for value in values:
+                    fid.write(f"{value.time} {value.value}\n")
         
 
 class VCDIngest:
