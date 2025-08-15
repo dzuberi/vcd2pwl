@@ -1,5 +1,5 @@
 import argparse
-import os
+import os, sys
 import pickle
 from vcd2pwl import Signal
 import PySpice.Spice.Parser as sparser
@@ -48,43 +48,31 @@ class Hierarchy:
             with open(file, 'w') as f:
                 f.write(string)
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate SPICE stimulus from PWL files.")
-    parser.add_argument("--pwl_dir", default="pyvcd_pwls", help="Directory to read PWL files from")
-    parser.add_argument("--spice_file", default=None, help="Input SPICE file to read")
-    parser.add_argument("--verilog_file", default=None, help="Input Verilog file to read")
-    parser.add_argument("module_path", help="Name of the stimulus to generate")
-    args = parser.parse_args()
-
-    # load data structures from the PWL generation script
-    dicts = pickle.load(open(os.path.join(args.pwl_dir, "dicts.pickle"), "rb"))
-    id_to_signal = dicts['id_to_signal']
-    file_to_id = dicts['file_to_id']
-    signal_to_id = {v: k for k, v_ in id_to_signal.items() for v in v_}
-    all_signals = [s.name for s in signal_to_id.keys()]
-    signals = [s for s in signal_to_id.keys() if '.'.join(s.name.split('.')[:-1]) == args.module_path]
-    files = [f for f in file_to_id.keys()]
-
-    # convert the signals from the dict into a hierarchy for sanity/debug
-    hierarchy = Hierarchy(all_signals)
-    hierarchy.print_hierarchy('hier.txt')
-
-    for signal in signals:
-        print(signal)
-    if args.spice_file:
+class StimulusWriter:
+    def __init__(self, pwl_dir, module_path, verilog_file=None, spice_file=None):
+        self.module_path = module_path
+        self.pwl_dir = pwl_dir
+        self.verilog_file = verilog_file
+        self.spice_file = spice_file
+        self.load_pickle()
+    
+    def get_ports_from_spice_file(self):
         # Parse the SPICE file to extract subcircuit ports
-        spice_parser = sparser.SpiceParser(args.spice_file)
+        # assumes that the file name is something like <subcircuit_name>.<extension>
+        spice_parser = sparser.SpiceParser(self.spice_file)
         subcircuits = spice_parser.subcircuits
         subcircuit_ports = {subcircuit.name: subcircuit.nodes for subcircuit in subcircuits}
-        spice_ports = subcircuit_ports[args.spice_file.split('/')[-1].split('.')[0]]
-        print(f"Subcircuit ports for {args.spice_file}: {spice_ports}")
-
-    if args.verilog_file:
+        spice_ports = subcircuit_ports[self.spice_file.split('/')[-1].split('.')[0]]
+        print(f"Subcircuit ports for {self.spice_file}: {spice_ports}")
+        self.spice_ports = spice_ports
+    
+    def get_ports_from_verilog_file(self):
         # Parse the Verilog file to determine which ports are inputs and which are outputs
+        # assumes that the file name is something like <module_name>.<extension>
         port_directions = {}
         from pyverilog.vparser.parser import parse
-        ast, _ = parse([args.verilog_file])
         from pyverilog.vparser.ast import ModuleDef, Input, Output, Inout, Decl
+        ast, _ = parse([self.verilog_file])
         for desc in ast.description.definitions:
             if isinstance(desc, ModuleDef):
                 print(f"Module: {desc.name}")
@@ -102,6 +90,88 @@ def main():
                 for port in desc.portlist.ports:
                     direction = port_directions.get(port.name, 'unknown')
                     print(f"Port: {port.name}, Direction: {direction}")
+        self.verilog_ports = port_directions
+    
+    def get_common_ports(self):
+        s_v = set(self.verilog_ports.keys())
+        s_s = set([s.split('.')[0] for s in self.spice_ports]) # bigspicy seems to use names like s.0 for s[0]
+        spice_only = s_s - s_v
+        verilog_only = s_v - s_s
+        assert(not verilog_only), f"Verilog ports not found in spice: {verilog_only}"
+        if spice_only:
+            print(Warning(f"SPICE ports not found in Verilog: {spice_only}\nThis could be intended, especially for power pins"))
+        self.common_ports = {p:d for p,d in self.verilog_ports.items() if p in s_s}
+        self.input_ports = [p for p,d in self.common_ports.items() if d == 'input' or d == 'inout']
+        print(f"SPICE Ports:\n{self.spice_ports}\nVerilog Input Ports:{list(self.verilog_ports.items())}\nCommon Ports:{list(self.common_ports.items())}")
+
+    def get_pwls(self):
+        print(self.signal_name_table)
+        self.undriven_spice_ports = set(self.spice_ports)
+        self.driver_code = ''
+        for signal in self.input_ports:
+            if signal not in self.signal_name_table:
+                print(f"ERROR: signal {signal} found in verilog but not in .vcd file. This is unexpected")
+                sys.exit(1)
+            signal_obj = self.signal_name_table[signal]
+            bitwidth = signal_obj.size
+            id = self.signal_to_id[signal_obj]
+            print(signal, bitwidth)
+            for bit in range(bitwidth):
+                pwl_file = self.pwl_dir + '/' + str(self.id_to_file[(id, bit)]) + '.pwl'
+                print(f"Loading PWL file for signal {signal}.{bit}: {pwl_file}")
+                spice = f"V{signal}.{bit} {signal}.{bit} 0 PWL FILE=\"{pwl_file}\"\n"
+                self.driver_code += (spice)
+                self.undriven_spice_ports.remove(f"{signal}.{bit}")
+        print(f"driver code so far:\n{self.driver_code}\nundriven: {self.undriven_spice_ports}")
+
+    def load_pickle(self):
+        dicts = pickle.load(open(os.path.join(self.pwl_dir, "dicts.pickle"), "rb"))
+        self.id_to_signal = dicts['id_to_signal']
+        self.file_to_id = dicts['file_to_id']
+        self.id_to_file = {id:f for f,id in self.file_to_id.items()}
+        self.signal_to_id = {v: k for k, v_ in self.id_to_signal.items() for v in v_} # map of signal names to id
+        self.all_signals = [s.name for s in self.signal_to_id.keys()] # all signals in symbol table
+        # print(self.all_signals)
+        self.signals = [s for s in self.signal_to_id.keys() if '.'.join(s.name.split('.')[:-1]) == self.module_path] # all signals in subpath
+        self.signal_name_table = {list(reversed(s.name.split('.')))[0]: s for s in self.signals}
+
+
+    def ports_to_signals(self):
+        pass
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate SPICE stimulus from PWL files.")
+    parser.add_argument("--pwl_dir", default="pyvcd_pwls", help="Directory to read PWL files from")
+    parser.add_argument("--spice_file", default=None, help="Input SPICE file to read")
+    parser.add_argument("--verilog_file", default=None, help="Input Verilog file to read")
+    parser.add_argument("module_path", help="Name of the stimulus to generate")
+    args = parser.parse_args()
+
+    # load data structures from the PWL generation script
+    dicts = pickle.load(open(os.path.join(args.pwl_dir, "dicts.pickle"), "rb"))
+    id_to_signal = dicts['id_to_signal']
+    file_to_id = dicts['file_to_id']
+    signal_to_id = {v: k for k, v_ in id_to_signal.items() for v in v_} # map of signal names to id
+    all_signals = [s.name for s in signal_to_id.keys()] # all signals in symbol table
+    signals = [s for s in signal_to_id.keys() if '.'.join(s.name.split('.')[:-1]) == args.module_path] # all signals in subpath
+    files = [f for f in file_to_id.keys()]
+
+    # convert the signals from the dict into a hierarchy for sanity/debug
+    hierarchy = Hierarchy(all_signals)
+    hierarchy.print_hierarchy('hier.txt')
+
+    for signal in signals:
+        print(signal)
+
+    writer = StimulusWriter(args.pwl_dir, args.module_path, args.verilog_file, args.spice_file)
+    if args.spice_file:
+        writer.get_ports_from_spice_file()
+
+    if args.verilog_file:
+        writer.get_ports_from_verilog_file()
+
+    writer.get_common_ports()
+    writer.get_pwls()
 
 
 """

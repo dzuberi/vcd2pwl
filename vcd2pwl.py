@@ -27,6 +27,12 @@ class Signal:
         if self.size > 1:
             return f"{self.type}:{self.name}[{self.size-1}:0]"
         return f"{self.type}:{self.name}"
+    def __eq__(self, other):
+        if not isinstance(other, Signal):
+            return NotImplemented
+        return self.type == other.type and self.size == other.size and self.id == other.id and self.name == other.name
+    def __hash__(self):
+        return hash((self.type, self.size, self.id, self.name))
 
 class Value:
     def __init__(self, value, time):
@@ -99,7 +105,7 @@ class PWLConverter:
             sys.exit(1)
     
     def digital_to_analog(self, value):
-        return self.LO if value == '0' or value == 'X' else self.HI if value == '1' else self.Z
+        return self.LO if value == '0' or value == 'x' else self.HI if value == '1' else self.Z
 
     def convert_dvt_to_analog(self):
         self.analog_value_table = defaultdict(list)
