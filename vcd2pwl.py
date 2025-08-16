@@ -141,7 +141,8 @@ class PWLConverter:
         id_to_file = {id: i for i, id in file_to_id.items()}
         data = {
             'id_to_signal': self.vcd.symbol_table,
-            'file_to_id': file_to_id
+            'file_to_id': file_to_id,
+            'sim_length': self.vcd.time * self.vcd.timescale,
         }
         pickle.dump(data, open(os.path.join(pwl_dir, "dicts.pickle"), "wb"))
         for id, values in tqdm(self.analog_value_table.items(), desc="Writing PWL files", unit="file"):
@@ -168,7 +169,8 @@ class VCDIngest:
         pickle.dump({
             'symbol_table': self.symbol_table,
             'value_table': self.value_table,
-            'timescale': self.timescale
+            'timescale': self.timescale,
+            'time': self.time
         }, open(pickle_file, "wb"))
     
     def load_pickle(self, pickle_file):
@@ -176,6 +178,7 @@ class VCDIngest:
         self.symbol_table = data['symbol_table']
         self.value_table = data['value_table']
         self.timescale = data['timescale']
+        self.time = data['time']
 
     def add_signal(self, type, size, id, name):
         signal_path = '.'.join(self.current_scope + [name])

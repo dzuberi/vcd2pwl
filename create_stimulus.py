@@ -3,6 +3,7 @@ import os, sys
 import pickle
 from vcd2pwl import Signal
 import PySpice.Spice.Parser as sparser
+from math import ceil
 
 class Hierarchy:
     def __init__(self, all_signals):
@@ -49,11 +50,12 @@ class Hierarchy:
                 f.write(string)
 
 class StimulusWriter:
-    def __init__(self, pwl_dir, module_path, verilog_file=None, spice_file=None):
+    def __init__(self, pwl_dir, module_path, sim_length, verilog_file=None, spice_file=None):
         self.module_path = module_path
         self.pwl_dir = pwl_dir
         self.verilog_file = verilog_file
         self.spice_file = spice_file
+        self.sim_length = sim_length
         self.load_pickle()
     
     def get_ports_from_spice_file(self):
@@ -122,7 +124,40 @@ class StimulusWriter:
                 spice = f"V{signal}.{bit} {signal}.{bit} 0 PWL FILE=\"{pwl_file}\"\n"
                 self.driver_code += (spice)
                 self.undriven_spice_ports.remove(f"{signal}.{bit}")
+        # print(f"driver code so far:\n{self.driver_code}\nundriven: {self.undriven_spice_ports}")
+        self.build_rest_of_spice()
+        
+    def build_rest_of_spice(self):
+        print(self.sim_length)
+        tran_statement = f'.tran 1p {ceil(self.sim_length / 1e-12)}p'
+        spice_module_name = self.spice_file.split("/")[-1].split('.')[0]
+        spice_directory = os.path.dirname(self.spice_file) if self.spice_file else '.'
+        include_statement = f'.include "{spice_module_name}.sp"'
+        instantiation = f'X{spice_module_name} ' + ' '.join(self.spice_ports) + f' {spice_module_name}'
+        print_statement = f'.print tran {" ".join([f"v({s})" for s in self.spice_ports])}'
+
+        vdd_port_names = ['vdd','VDD'] # Common names for VDD
+        vdd_port = None
+        vss_port_names = ['vss','VSS'] # Common names for VSS
+        vss_port = None
+        for name in vdd_port_names:
+            if name in self.spice_ports:
+                vdd_port = name
+                break
+        for name in vss_port_names:
+            if name in self.spice_ports:
+                vss_port = name
+                break
+        if not vdd_port or not vss_port:
+            print("Cannot find power ports")
+            sys.exit(1)
+        
+        power_statements = f"{vss_port} {vss_port} 0 0\n{vdd_port} {vdd_port} 0 3.3\n"
+
+        self.driver_code = f"{include_statement}\n{instantiation}\n{tran_statement}\n{self.driver_code}{power_statements}{print_statement}\n.end"
+
         print(f"driver code so far:\n{self.driver_code}\nundriven: {self.undriven_spice_ports}")
+        
 
     def load_pickle(self):
         dicts = pickle.load(open(os.path.join(self.pwl_dir, "dicts.pickle"), "rb"))
@@ -151,6 +186,7 @@ def main():
     dicts = pickle.load(open(os.path.join(args.pwl_dir, "dicts.pickle"), "rb"))
     id_to_signal = dicts['id_to_signal']
     file_to_id = dicts['file_to_id']
+    sim_length = dicts['sim_length']
     signal_to_id = {v: k for k, v_ in id_to_signal.items() for v in v_} # map of signal names to id
     all_signals = [s.name for s in signal_to_id.keys()] # all signals in symbol table
     signals = [s for s in signal_to_id.keys() if '.'.join(s.name.split('.')[:-1]) == args.module_path] # all signals in subpath
@@ -163,7 +199,13 @@ def main():
     for signal in signals:
         print(signal)
 
-    writer = StimulusWriter(args.pwl_dir, args.module_path, args.verilog_file, args.spice_file)
+    writer = StimulusWriter(
+        pwl_dir=args.pwl_dir, 
+        module_path=args.module_path, 
+        sim_length=sim_length, 
+        verilog_file=args.verilog_file, 
+        spice_file=args.spice_file
+    )
     if args.spice_file:
         writer.get_ports_from_spice_file()
 
