@@ -63,7 +63,7 @@ class Value:
 class PWLConverter:
     def __init__(self, vcd):
         self.value_table = defaultdict(list)
-        self.HI = 3.3       # Electrical level for a logical 1
+        self.HI = 1.8       # Electrical level for a logical 1
         self.LO = 0.0       # Electrical value for a logical 0
         self.TRF = 1e-9     # Rise/fall time in sec
         self.Z = 'z'
