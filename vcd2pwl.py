@@ -134,6 +134,12 @@ class PWLConverter:
                     if new_value != self.Z:
                         self.analog_value_table[(id, bit)].append(Value(new_value, time + self.TRF))
     
+    def dump_pwl(self, file_name, file_path, values):
+        with open(os.path.join(file_path, file_name), "w") as fid:
+            for value in values:
+                fid.write(f"{value.time} {value.value}\n")
+        print(f"Wrote {file_path} with {len(values)} values.")
+    
     def dump_pwls(self, pwl_dir="pwls", submodule="prga_tb_top.i_postimpl.dut"):
         os.makedirs(pwl_dir, exist_ok=True)
         # print(sorted(list(self.analog_value_table.keys()), key=lambda x: x[1], reverse=False))
@@ -143,18 +149,14 @@ class PWLConverter:
             'id_to_signal': self.vcd.symbol_table,
             'file_to_id': file_to_id,
             'sim_length': self.vcd.time * self.vcd.timescale,
+            'obj': self
         }
         pickle.dump(data, open(os.path.join(pwl_dir, "dicts.pickle"), "wb"))
-        for id, values in tqdm(self.analog_value_table.items(), desc="Writing PWL files", unit="file"):
-            file_name = f"{id_to_file[id]}.pwl"
-            file_path = os.path.join(pwl_dir, file_name)
-            # import pdb; pdb.set_trace()
-            # if self.vcd.symbol_table[id[0]][0].size > 1:
-                # print(f"Writing {file_path} with {len(values)} values for key {id} corresponding to signal {self.vcd.symbol_table[id[0]][0].name} with length {self.vcd.symbol_table[id[0]][0].size}.")
-            with open(file_path, "w") as fid:
-                for value in values:
-                    fid.write(f"{value.time} {value.value}\n")
-        print(f"Dumped {len(self.analog_value_table)} PWL files to {pwl_dir}. Total size: {get_dir_size_du(pwl_dir)}")
+        # for id, values in tqdm(self.analog_value_table.items(), desc="Writing PWL files", unit="file"):
+        #     file_name = f"{id_to_file[id]}.pwl"
+        #     file_path = os.path.join(pwl_dir, file_name)
+        #     self.dump_pwl(file_name, file_path, values)
+        # print(f"Dumped {len(self.analog_value_table)} PWL files to {pwl_dir}. Total size: {get_dir_size_du(pwl_dir)}")
         
 
 class VCDIngest:

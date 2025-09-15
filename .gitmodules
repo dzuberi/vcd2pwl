@@ -1,0 +1,3 @@
+[submodule "pyvcd"]
+	path = pyvcd
+	url = https://github.com/dzuberi/pyvcd
