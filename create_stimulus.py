@@ -269,6 +269,7 @@ class StimulusWriter:
                 # print(f'values: {[str(v) for v in values]} became {[str(v) for v in new_values]}')
                 assert new_values[-1].time <= self.sim_length - self.prog_done_time, f"Last value of signal {signal} after removing programming is at time {new_values[-1].time}, which is beyond the new sim_length {self.sim_length - self.prog_done_time}"
                 self.pwlconv.dump_pwl(f"{self.id_to_file[(id, bit)]}.pwl", self.output_dir, new_values)
+                self.pwlconv.analog_value_table[(id, bit)] = new_values # MAKE SURE NOT TO SAVE THIS
         self.sim_length = self.sim_length - self.prog_done_time
 
 
